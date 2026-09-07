@@ -1,0 +1,184 @@
+name: Build PlayNest iOS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Create iOS wrapper
+        shell: bash
+        run: |
+          mkdir -p ios/PlayNest
+
+          cat > ios/PlayNest/PlayNestApp.swift <<'SWIFT'
+          import SwiftUI
+
+          @main
+          struct PlayNestApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          SWIFT
+
+          cat > ios/PlayNest/ContentView.swift <<'SWIFT'
+          import SwiftUI
+          import WebKit
+          import UIKit
+
+          struct ContentView: UIViewRepresentable {
+              func makeCoordinator() -> Coordinator {
+                  Coordinator()
+              }
+
+              func makeUIView(context: Context) -> WKWebView {
+                  let configuration = WKWebViewConfiguration()
+                  configuration.websiteDataStore = .default()
+                  configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+                  configuration.allowsInlineMediaPlayback = true
+
+                  let webView = WKWebView(frame: .zero, configuration: configuration)
+                  webView.navigationDelegate = context.coordinator
+                  webView.uiDelegate = context.coordinator
+                  webView.isOpaque = false
+                  webView.backgroundColor = UIColor(red: 1.0, green: 250.0/255.0, blue: 246.0/255.0, alpha: 1.0)
+                  webView.scrollView.backgroundColor = webView.backgroundColor
+
+                  if let fileURL = Bundle.main.url(forResource: "index", withExtension: "html") {
+                      webView.loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
+                  }
+
+                  return webView
+              }
+
+              func updateUIView(_ webView: WKWebView, context: Context) {}
+
+              final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+                  func webView(
+                      _ webView: WKWebView,
+                      decidePolicyFor navigationAction: WKNavigationAction,
+                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+                  ) {
+                      if let url = navigationAction.request.url,
+                         let scheme = url.scheme?.lowercased(),
+                         (scheme == "http" || scheme == "https"),
+                         navigationAction.targetFrame == nil {
+                          UIApplication.shared.open(url)
+                          decisionHandler(.cancel)
+                          return
+                      }
+
+                      decisionHandler(.allow)
+                  }
+
+                  func webView(
+                      _ webView: WKWebView,
+                      createWebViewWith configuration: WKWebViewConfiguration,
+                      for navigationAction: WKNavigationAction,
+                      windowFeatures: WKWindowFeatures
+                  ) -> WKWebView? {
+                      if let url = navigationAction.request.url {
+                          webView.load(URLRequest(url: url))
+                      }
+                      return nil
+                  }
+              }
+          }
+          SWIFT
+
+          cat > ios/PlayNest/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>PlayNest</string>
+              <key>NSPhotoLibraryUsageDescription</key>
+              <string>Το PlayNest χρειάζεται πρόσβαση στις φωτογραφίες όταν επιλέγετε εικόνα.</string>
+              <key>NSCameraUsageDescription</key>
+              <string>Το PlayNest χρειάζεται πρόσβαση στην κάμερα όταν επιλέγετε να τραβήξετε φωτογραφία.</string>
+              <key>UILaunchScreen</key>
+              <dict/>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+              </array>
+              <key>UISupportedInterfaceOrientations~ipad</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+          </dict>
+          </plist>
+          PLIST
+
+          cat > ios/project.yml <<'YAML'
+          name: PlayNest
+          options:
+            deploymentTarget:
+              iOS: "16.0"
+
+          targets:
+            PlayNest:
+              type: application
+              platform: iOS
+              sources:
+                - path: PlayNest
+                - path: ../app/src/main/assets/index.html
+                  buildPhase: resources
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: gr.playnest.app
+                  PRODUCT_NAME: PlayNest
+                  INFOPLIST_FILE: PlayNest/Info.plist
+                  CURRENT_PROJECT_VERSION: 1
+                  MARKETING_VERSION: 1.0
+                  SWIFT_VERSION: 5.0
+                  TARGETED_DEVICE_FAMILY: "1,2"
+                  CODE_SIGN_STYLE: Automatic
+          YAML
+
+      - name: Generate Xcode project
+        run: |
+          cd ios
+          xcodegen generate
+
+      - name: Build for iPhone Simulator
+        run: |
+          cd ios
+          xcodebuild \
+            -project PlayNest.xcodeproj \
+            -scheme PlayNest \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build" \
+            build
+
+      - name: Package simulator app
+        run: |
+          cd build
+          zip -r PlayNest-iOS-Simulator.zip PlayNest.app
+
+      - name: Upload PlayNest iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlayNest-iOS-Simulator
+          path: build/PlayNest-iOS-Simulator.zip
